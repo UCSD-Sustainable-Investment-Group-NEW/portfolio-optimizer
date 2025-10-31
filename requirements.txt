@@ -1,0 +1,12 @@
+boto3
+s3fs
+pyarrow
+pandas
+numpy
+polars
+duckdb
+prefect>=2.16
+pydantic
+cvxpy
+scikit-learn
+matplotlib

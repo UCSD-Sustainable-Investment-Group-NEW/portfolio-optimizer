@@ -1,0 +1,18 @@
+# Virtual environments
+.venv/
+
+# Environment secrets
+.env
+.env.*
+!example.env
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+
+# Local OS clutter
+.DS_Store
+
+# Generated outputs
+logs/
+lake/

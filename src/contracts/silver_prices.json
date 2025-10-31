@@ -1,0 +1,12 @@
+{
+  "name": "silver.prices",
+  "columns": {
+    "asset_id": "string",
+    "ticker": "string",
+    "adj_close": "float64",
+    "adj_open": "float64",
+    "volume": "int64",
+    "dt": "string"
+  },
+  "partition_cols": ["dt"]
+}

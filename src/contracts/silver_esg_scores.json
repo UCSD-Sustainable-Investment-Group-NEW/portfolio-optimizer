@@ -1,0 +1,11 @@
+{
+  "name": "silver.esg_scores",
+  "columns": {
+    "asset_id": "string",
+    "provider": "string",
+    "esg_raw": "float64",
+    "esg_z": "float64",
+    "dt": "string"
+  },
+  "partition_cols": ["dt"]
+}

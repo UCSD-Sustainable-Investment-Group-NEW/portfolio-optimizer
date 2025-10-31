@@ -1,0 +1,3 @@
+date,ticker,asset_id,provider,esg_raw
+2025-10-31,AAPL,AAPL,DemoProv,67.2
+2025-10-31,MSFT,MSFT,DemoProv,71.8
