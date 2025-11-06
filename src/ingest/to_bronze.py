@@ -1,9 +1,9 @@
 import pandas as pd
 
-from src.common.io import write_dataset
-
 
 def run() -> None:
+    from src.common.io import write_dataset
+
     prices = pd.read_csv("data/raw/prices_demo.csv", parse_dates=["date"])
     prices["dt"] = prices["date"].dt.strftime("%Y-%m-%d")
     prices_br = prices.rename(columns=str.lower)

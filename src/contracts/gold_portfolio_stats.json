@@ -1,0 +1,9 @@
+{
+  "name": "gold.portfolio_stats",
+  "columns": {
+    "dt": "string",
+    "expected_return": "float64",
+    "volatility": "float64"
+  },
+  "partition_cols": ["dt"]
+}

@@ -2,8 +2,6 @@ import json
 
 import pandas as pd
 
-from .io import read_parquet  # noqa: F401 (used by callers downstream)
-
 
 def enforce_schema(df: pd.DataFrame, contract_path: str) -> pd.DataFrame:
     with open(contract_path, "r", encoding="utf-8") as handle:

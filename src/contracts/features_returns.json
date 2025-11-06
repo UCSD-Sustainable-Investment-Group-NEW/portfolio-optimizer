@@ -1,0 +1,9 @@
+{
+  "name": "features.returns",
+  "columns": {
+    "asset_id": "string",
+    "dt": "string",
+    "return_1d": "float64"
+  },
+  "partition_cols": ["dt"]
+}

@@ -1,9 +1,10 @@
 import json
 import os
 
+import importlib
+from functools import lru_cache
+
 import pandas as pd
-import pyarrow as pa
-import pyarrow.parquet as pq
 import s3fs
 
 S3_ENDPOINT = os.getenv("S3_ENDPOINT", "")
@@ -15,7 +16,18 @@ def _fs() -> s3fs.S3FileSystem:
     return s3fs.S3FileSystem(**kwargs)
 
 
+@lru_cache(maxsize=1)
+def _arrow():
+    try:
+        pa = importlib.import_module("pyarrow")
+        pq = importlib.import_module("pyarrow.parquet")
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("pyarrow is required for parquet IO operations.") from exc
+    return pa, pq
+
+
 def to_parquet(df: pd.DataFrame, key: str) -> None:
+    pa, pq = _arrow()
     fs = _fs()
     with fs.open(f"{BUCKET}/{key}", "wb") as handle:
         table = pa.Table.from_pandas(df, preserve_index=False)
@@ -23,6 +35,7 @@ def to_parquet(df: pd.DataFrame, key: str) -> None:
 
 
 def write_dataset(df: pd.DataFrame, root: str, partition_cols=("dt",)) -> None:
+    pa, pq = _arrow()
     fs = _fs()
     pq.write_to_dataset(
         pa.Table.from_pandas(df, preserve_index=False),
@@ -35,6 +48,7 @@ def write_dataset(df: pd.DataFrame, root: str, partition_cols=("dt",)) -> None:
 
 
 def read_parquet(key_or_glob: str) -> pd.DataFrame:
+    _, pq = _arrow()
     fs = _fs()
     paths = fs.glob(f"{BUCKET}/{key_or_glob}")
     tables = []

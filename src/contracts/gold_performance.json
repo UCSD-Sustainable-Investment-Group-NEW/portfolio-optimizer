@@ -1,0 +1,9 @@
+{
+  "name": "gold.performance",
+  "columns": {
+    "dt": "string",
+    "portfolio_return": "float64",
+    "cumulative_return": "float64"
+  },
+  "partition_cols": ["dt"]
+}

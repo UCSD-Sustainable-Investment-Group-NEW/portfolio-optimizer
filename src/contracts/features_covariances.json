@@ -1,0 +1,10 @@
+{
+  "name": "features.covariances",
+  "columns": {
+    "dt": "string",
+    "asset_i": "string",
+    "asset_j": "string",
+    "cov": "float64"
+  },
+  "partition_cols": ["dt"]
+}

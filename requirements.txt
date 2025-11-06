@@ -10,3 +10,4 @@ pydantic
 cvxpy
 scikit-learn
 matplotlib
+pytest

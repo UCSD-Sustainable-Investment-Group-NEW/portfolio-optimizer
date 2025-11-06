@@ -1,0 +1,9 @@
+{
+  "name": "gold.portfolios",
+  "columns": {
+    "dt": "string",
+    "asset_id": "string",
+    "weight": "float64"
+  },
+  "partition_cols": ["dt"]
+}

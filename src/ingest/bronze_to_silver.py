@@ -1,10 +1,11 @@
 import pandas as pd
 
-from src.common.io import read_parquet, write_dataset
 from src.common.schemas import enforce_schema
 
 
 def prices_to_silver() -> None:
+    from src.common.io import read_parquet, write_dataset
+
     df = read_parquet("bronze/prices/dt=*/part*.parquet")
     if "date" in df.columns:
         df = df.rename(columns={"date": "dt"})
@@ -14,6 +15,8 @@ def prices_to_silver() -> None:
 
 
 def esg_to_silver() -> None:
+    from src.common.io import read_parquet, write_dataset
+
     df = read_parquet("bronze/esg_scores/dt=*/part*.parquet")
     df = df[["asset_id", "provider", "esg_raw", "dt"]]
     df["esg_z"] = df.groupby("dt")["esg_raw"].transform(

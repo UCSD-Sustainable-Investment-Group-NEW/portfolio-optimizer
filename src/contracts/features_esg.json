@@ -1,0 +1,12 @@
+{
+  "name": "features.esg_normalized",
+  "columns": {
+    "asset_id": "string",
+    "dt": "string",
+    "provider": "string",
+    "esg_z": "float64",
+    "esg_percentile": "float64",
+    "esg_normalized": "float64"
+  },
+  "partition_cols": ["dt"]
+}
