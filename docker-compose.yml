@@ -1,9 +1,18 @@
 services:
   minio:
-    image: minio/minio
+    image: minio/minio:latest
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: admin
       MINIO_ROOT_PASSWORD: admin12345
-    ports: ["9000:9000","9001:9001"]
-    volumes: ["./lake:/data"]
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - "./lake:/data"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+      start_period: 10s
