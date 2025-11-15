@@ -15,7 +15,7 @@ def run() -> pd.DataFrame:
     from src.common.io import read_parquet, write_dataset
     from src.common.schemas import enforce_schema
 
-    esg = read_parquet("silver/esg_scores/dt=*/part*.parquet")
+    esg = read_parquet("silver/esg_scores/dt=*/*.parquet")
     if esg.empty:
         return pd.DataFrame(columns=["asset_id", "dt", "provider", "esg_z", "esg_percentile", "esg_normalized"])
     esg = esg.copy()

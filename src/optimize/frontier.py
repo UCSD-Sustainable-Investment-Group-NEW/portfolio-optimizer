@@ -78,8 +78,8 @@ def run(lookback: int = DEFAULT_LOOKBACK) -> OptimizationArtifacts:
     from src.common.io import read_parquet, write_dataset
     from src.common.schemas import enforce_schema
 
-    returns = read_parquet("features/returns/dt=*/part*.parquet")
-    covariances = read_parquet("features/covariances/dt=*/part*.parquet")
+    returns = read_parquet("features/returns/dt=*/*.parquet")
+    covariances = read_parquet("features/covariances/dt=*/*.parquet")
     if returns.empty or covariances.empty:
         return OptimizationArtifacts(
             weights=pd.DataFrame(columns=["dt", "asset_id", "weight"]),

@@ -6,10 +6,19 @@ from src.common.schemas import enforce_schema
 def prices_to_silver() -> None:
     from src.common.io import read_parquet, write_dataset
 
-    df = read_parquet("bronze/prices/dt=*/part*.parquet")
+    df = read_parquet("bronze/prices/dt=*/*.parquet")
+    if df.empty:
+        return
+    # Handle column name variations (date vs dt, case sensitivity)
     if "date" in df.columns:
         df = df.rename(columns={"date": "dt"})
-    df = df[["asset_id", "ticker", "adj_close", "adj_open", "volume", "dt"]]
+    # Ensure we have the required columns (handle both lowercase and original case)
+    required_cols = ["asset_id", "ticker", "adj_close", "adj_open", "volume", "dt"]
+    # Convert to lowercase for consistency
+    df.columns = df.columns.str.lower()
+    if "date" in df.columns:
+        df = df.rename(columns={"date": "dt"})
+    df = df[required_cols]
     df = enforce_schema(df, "src/contracts/silver_prices.json")
     write_dataset(df, "silver/prices", ("dt",))
 
@@ -17,7 +26,16 @@ def prices_to_silver() -> None:
 def esg_to_silver() -> None:
     from src.common.io import read_parquet, write_dataset
 
-    df = read_parquet("bronze/esg_scores/dt=*/part*.parquet")
+    df = read_parquet("bronze/esg_scores/dt=*/*.parquet")
+    if df.empty:
+        return
+    # Handle column name variations (date vs dt, case sensitivity)
+    if "date" in df.columns:
+        df = df.rename(columns={"date": "dt"})
+    # Convert to lowercase for consistency
+    df.columns = df.columns.str.lower()
+    if "date" in df.columns:
+        df = df.rename(columns={"date": "dt"})
     df = df[["asset_id", "provider", "esg_raw", "dt"]]
     df["esg_z"] = df.groupby("dt")["esg_raw"].transform(
         lambda series: (series - series.mean())

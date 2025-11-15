@@ -63,7 +63,7 @@ def run(window: int = DEFAULT_WINDOW) -> FeatureArtifacts:
     from src.common.io import read_parquet, write_dataset
     from src.common.schemas import enforce_schema
 
-    prices = read_parquet("silver/prices/dt=*/part*.parquet")
+    prices = read_parquet("silver/prices/dt=*/*.parquet")
     returns = compute_returns(prices)
     covariances = compute_covariances(returns, window=window)
     if not returns.empty:

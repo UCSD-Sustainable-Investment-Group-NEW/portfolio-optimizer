@@ -15,8 +15,8 @@ def run() -> pd.DataFrame:
     from src.common.io import read_parquet, write_dataset
     from src.common.schemas import enforce_schema
 
-    returns = read_parquet("features/returns/dt=*/part*.parquet")
-    weights = read_parquet("gold/portfolios/dt=*/part*.parquet")
+    returns = read_parquet("features/returns/dt=*/*.parquet")
+    weights = read_parquet("gold/portfolios/dt=*/*.parquet")
     if returns.empty or weights.empty:
         return pd.DataFrame(columns=["dt", "portfolio_return", "cumulative_return"])
 

@@ -9,10 +9,18 @@ import s3fs
 
 S3_ENDPOINT = os.getenv("S3_ENDPOINT", "")
 BUCKET = os.getenv("LAKE_BUCKET", "lake")
+AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID", "")
+AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY", "")
 
 
 def _fs() -> s3fs.S3FileSystem:
-    kwargs = {"client_kwargs": {"endpoint_url": S3_ENDPOINT}} if S3_ENDPOINT else {}
+    kwargs = {}
+    if S3_ENDPOINT:
+        kwargs["client_kwargs"] = {"endpoint_url": S3_ENDPOINT}
+    if AWS_ACCESS_KEY_ID:
+        kwargs["key"] = AWS_ACCESS_KEY_ID
+    if AWS_SECRET_ACCESS_KEY:
+        kwargs["secret"] = AWS_SECRET_ACCESS_KEY
     return s3fs.S3FileSystem(**kwargs)
 
 
