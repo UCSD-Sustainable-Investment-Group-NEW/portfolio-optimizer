@@ -92,10 +92,19 @@ def optimize_esg_frontier(
 
     esg_scores_arr = np.array(esg_scores)
 
-    constraints = (
-        {"type": "eq", "fun": lambda w: np.sum(w) - 1},
-        {"type": "eq", "fun": lambda w: target_esg - float(np.dot(w, esg_scores_arr))},
-    )
+    esg_span = float(esg_scores_arr.max() - esg_scores_arr.min())
+    base_constraints = [{"type": "eq", "fun": lambda w: np.sum(w) - 1}]
+    # When all ESG scores are equal (or nearly so), the ESG constraint is collinear
+    # with the sum-to-one constraint and SLSQP fails with a singular matrix.
+    # In that case, skip the ESG equality and fall back to the unconstrained case.
+    constraints: Sequence[dict]
+    if esg_span < 1e-8:
+        constraints = tuple(base_constraints)
+    else:
+        constraints = tuple(
+            base_constraints
+            + [{"type": "eq", "fun": lambda w: target_esg - float(np.dot(w, esg_scores_arr))}]
+        )
 
     init = np.ones(n_assets) / n_assets
     result = minimize(objective, init, bounds=bounds, constraints=constraints)
@@ -139,6 +148,8 @@ def frontier_points(
     esg_scores_arr = np.array(esg_scores)
     min_esg = float(esg_scores_arr.min())
     max_esg = float(esg_scores_arr.max())
+    if max_esg - min_esg < 1e-8:
+        return []
     targets = np.round(np.arange(min_esg + step, max_esg - step + 1e-9, step), 3)
     for target in targets:
         try:
