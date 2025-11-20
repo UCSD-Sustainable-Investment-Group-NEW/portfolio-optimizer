@@ -14,3 +14,4 @@ pytest
 scipy
 streamlit
 yfinance
+altair

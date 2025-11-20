@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import streamlit as st
+import altair as alt
 
 from esg_optimizer import (
     asset_sharpes,
@@ -68,6 +69,9 @@ body { background: radial-gradient(circle at 20% 20%, #f9f1e2, var(--paper)); co
 .stDataFrame, .stDataFrame * { color: var(--forest); }
 .stMarkdown { color: var(--ink); }
 .st-table { border-radius: 12px; }
+.weights-table .stDataFrame, .weights-table .stDataFrame * { background: #ffffff !important; color: #000000 !important; }
+.weights-table th, .weights-table td { color: #000000 !important; text-align: center !important; }
+.weights-table table { margin-left: auto; margin-right: auto; }
 </style>
 """
 st.markdown(BRAND_GRADIENT, unsafe_allow_html=True)
@@ -177,7 +181,7 @@ def main() -> None:
         min_alloc_pct = st.slider("Minimum allocation (%)", min_value=0.0, max_value=25.0, value=1.0, step=0.5)
         min_alloc = min_alloc_pct / 100.0
         esg_step = st.slider("Frontier ESG step", min_value=0.005, max_value=0.05, value=0.01, step=0.005)
-        target_esg_input = st.number_input("Target ESG", value=0.65, step=0.01, format="%.3f")
+        target_esg_input = st.number_input("Target ESG", value=0.67, step=0.01, format="%.3f")
         run_button = st.button("Run optimizer", type="primary", use_container_width=True)
         if run_button:
             st.session_state["run_optimizer"] = True
@@ -266,7 +270,7 @@ def main() -> None:
     bench_error = None
     bench_close = load_benchmark(["SPY", "^GSPC"], start=returns_full.index.min(), end=returns_full.index.max())
     if bench_close.empty:
-        bench_error = "No benchmark data retrieved from Yahoo for SPY or ^GSPC."
+        bench_error = ""
     else:
         bench_returns = bench_close.pct_change().dropna()
         bench_returns = bench_returns.reindex(returns_full.index).ffill()
@@ -304,22 +308,40 @@ def main() -> None:
     with col_weights:
         st.markdown("<div style='margin-top:6px;'><h3>Optimized weights</h3></div>", unsafe_allow_html=True)
         weights_df = format_weights(opt.weights)
-        st.bar_chart(weights_df.set_index("ticker")["weight"])
+        bar = (
+            alt.Chart(weights_df)
+            .mark_bar(color="#1f6847")
+            .encode(
+                x=alt.X("ticker:N", sort=None, axis=alt.Axis(labelAngle=0, title="")),
+                y=alt.Y("weight:Q", title="Weight"),
+                tooltip=["ticker", alt.Tooltip("weight:Q", format=".4f"), alt.Tooltip("weight_pct:Q", format=".2f")],
+            )
+            .properties(height=320, background="white")
+        )
+        bar = bar.configure_view(strokeWidth=0, fill="white").configure_axis(labelColor="black", titleColor="black", gridColor="#dcdcdc")
+        st.altair_chart(bar, use_container_width=True)
         st.markdown(
             "<div class='chart-caption'>Bar chart shows how capital is distributed across tickers after applying the ESG and minimum allocation rules.</div>",
             unsafe_allow_html=True,
         )
-        st.dataframe(
-            weights_df,
-            use_container_width=True,
-            hide_index=True,
-            column_config={"weight": st.column_config.NumberColumn(format="%.4f")},
+        styled = (
+            weights_df.style.set_properties(**{"text-align": "center", "background-color": "white", "color": "black"})
+            .set_table_styles(
+                [
+                    {"selector": "th", "props": "text-align: center; background-color: white; color: black;"},
+                    {"selector": "td", "props": "text-align: center;"},
+                    {"selector": "table", "props": "margin-left:auto; margin-right:auto;"},
+                ]
+            )
         )
+        st.markdown("<div class='weights-table'>", unsafe_allow_html=True)
+        st.dataframe(styled, use_container_width=True, hide_index=True)
+        st.markdown("</div>", unsafe_allow_html=True)
 
     st.divider()
-    st.markdown("### Performance & ESG trade-offs", unsafe_allow_html=True)
-    frontier_col, table_col = st.columns([3, 2])
+    frontier_col, table_col = st.columns([3, 2], gap="large")
     with frontier_col:
+        st.markdown("### Performance & ESG trade-offs", unsafe_allow_html=True)
         fig, ax = plt.subplots(figsize=(8.2, 5.2))
         fig.patch.set_facecolor("none")
         ax.set_facecolor("#f7f0df")
@@ -346,7 +368,7 @@ def main() -> None:
             unsafe_allow_html=True,
         )
     with table_col:
-        st.markdown("#### Asset Sharpe ratios", unsafe_allow_html=True)
+        st.markdown("### Asset Sharpe ratios", unsafe_allow_html=True)
         sharpe_df = indiv_sharpes.reset_index()
         sharpe_df.columns = ["ticker", "sharpe"]
         st.dataframe(
