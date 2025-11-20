@@ -11,3 +11,6 @@ cvxpy
 scikit-learn
 matplotlib
 pytest
+scipy
+streamlit
+yfinance
