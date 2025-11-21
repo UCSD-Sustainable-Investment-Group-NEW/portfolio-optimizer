@@ -78,12 +78,19 @@ st.markdown(BRAND_GRADIENT, unsafe_allow_html=True)
 
 DEFAULT_TICKERS = ["CROX", "DECK", "EME", "COST", "DE", "NVDA"]
 DEFAULT_ESG = {
+    # Legacy defaults
     "CROX": 0.62,
     "DECK": 0.63,
     "EME": 0.56,
     "COST": 0.72,
     "DE": 0.73,
-    "NVDA": 0.69,
+    # New commonly used tech names
+    "AAPL": 0.80,
+    "AMZN": 0.65,
+    "META": 0.65,
+    "MSFT": 0.70,
+    "NVDA": 0.70,
+    "TSLA": 0.75,
 }
 
 
