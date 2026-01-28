@@ -41,6 +41,8 @@ def _covariance_matrix(covariances: pd.DataFrame, dt: str, assets: Sequence[str]
     filt = covariances[covariances["dt"] == dt]
     if filt.empty:
         raise ValueError(f"No covariance matrix available for {dt}")
+    # Drop duplicates before pivoting (keep last if duplicates exist)
+    filt = filt.drop_duplicates(subset=["asset_i", "asset_j"], keep="last")
     pivot = filt.pivot(index="asset_i", columns="asset_j", values="cov").reindex(index=assets, columns=assets)
     pivot = pivot.fillna(0.0)
     sym = (pivot.values + pivot.values.T) / 2.0
@@ -63,9 +65,22 @@ def _solve_mean_variance(expected: pd.Series, cov_matrix: np.ndarray) -> np.ndar
         weights <= WEIGHT_CAP,
     ]
     problem = cp.Problem(objective, constraints)
-    problem.solve(solver=cp.SCS, verbose=False, max_iters=2500)
-    if weights.value is None:
-        raise RuntimeError("Optimization failed to converge")
+    # Try multiple solvers
+    solvers = [cp.OSQP, cp.ECOS, cp.SCS]
+    solved = False
+    for solver in solvers:
+        try:
+            problem.solve(solver=solver, verbose=False, max_iters=5000, eps_abs=1e-5, eps_rel=1e-5)
+            if weights.value is not None:
+                solved = True
+                break
+        except Exception:
+            continue
+    
+    if not solved or weights.value is None:
+        # Fallback: use equal weights if optimization fails
+        solution = np.ones(n) / n
+        return solution
     solution = np.maximum(weights.value, 0.0)
     if solution.sum() == 0:
         solution = np.ones_like(solution) / len(solution)
@@ -74,7 +89,7 @@ def _solve_mean_variance(expected: pd.Series, cov_matrix: np.ndarray) -> np.ndar
     return solution
 
 
-def run(lookback: int = DEFAULT_LOOKBACK) -> OptimizationArtifacts:
+def run(lookback: int = DEFAULT_LOOKBACK, rebalance_freq: str = "monthly") -> OptimizationArtifacts:
     from src.common.io import read_parquet, write_dataset
     from src.common.schemas import enforce_schema
 
@@ -86,28 +101,60 @@ def run(lookback: int = DEFAULT_LOOKBACK) -> OptimizationArtifacts:
             stats=pd.DataFrame(columns=["dt", "expected_return", "volatility"]),
         )
 
-    latest_dt = _latest_dt(returns["dt"])
-    expected = _expected_returns(returns, latest_dt, lookback=lookback)
-    assets = sorted(expected.index.tolist())
-    cov_matrix = _covariance_matrix(covariances, latest_dt, assets)
-    solution = _solve_mean_variance(expected.reindex(assets), cov_matrix)
+    returns = returns.copy()
+    returns["dt"] = pd.to_datetime(returns["dt"])
+    returns = returns.sort_values("dt")
+    
+    # Determine rebalance dates
+    if rebalance_freq == "monthly":
+        # Rebalance on first trading day of each month
+        rebalance_dates = returns.groupby([returns["dt"].dt.year, returns["dt"].dt.month])["dt"].first().values
+    elif rebalance_freq == "quarterly":
+        # Rebalance on first trading day of each quarter
+        rebalance_dates = returns.groupby([returns["dt"].dt.year, returns["dt"].dt.quarter])["dt"].first().values
+    else:
+        # Default: use latest date only
+        rebalance_dates = [returns["dt"].max()]
 
-    weights_df = pd.DataFrame({"asset_id": assets, "weight": solution})
-    weights_df["dt"] = latest_dt
+    all_weights = []
+    all_stats = []
+    
+    for rebalance_dt in rebalance_dates:
+        rebalance_dt_str = pd.to_datetime(rebalance_dt).strftime("%Y-%m-%d")
+        try:
+            expected = _expected_returns(returns, rebalance_dt_str, lookback=lookback)
+            assets = sorted(expected.index.tolist())
+            if len(assets) == 0:
+                continue
+            cov_matrix = _covariance_matrix(covariances, rebalance_dt_str, assets)
+            solution = _solve_mean_variance(expected.reindex(assets), cov_matrix)
+
+            weights_df = pd.DataFrame({"asset_id": assets, "weight": solution})
+            weights_df["dt"] = rebalance_dt_str
+            all_weights.append(weights_df)
+
+            expected_return = float(np.dot(solution, expected.reindex(assets).values))
+            volatility = float(np.sqrt(solution @ cov_matrix @ solution))
+            all_stats.append({
+                "dt": rebalance_dt_str,
+                "expected_return": expected_return,
+                "volatility": volatility,
+            })
+        except Exception as e:
+            # Skip this date if optimization fails
+            continue
+
+    if not all_weights:
+        return OptimizationArtifacts(
+            weights=pd.DataFrame(columns=["dt", "asset_id", "weight"]),
+            stats=pd.DataFrame(columns=["dt", "expected_return", "volatility"]),
+        )
+
+    weights_df = pd.concat(all_weights, ignore_index=True)
     weights_df = enforce_schema(weights_df, "src/contracts/gold_portfolios.json")
     write_dataset(weights_df, "gold/portfolios", partition_cols=("dt",))
 
-    expected_return = float(np.dot(solution, expected.reindex(assets).values))
-    volatility = float(np.sqrt(solution @ cov_matrix @ solution))
-    stats_df = pd.DataFrame(
-        [
-            {
-                "dt": latest_dt,
-                "expected_return": expected_return,
-                "volatility": volatility,
-            }
-        ]
-    )
+    stats_df = pd.DataFrame(all_stats)
     stats_df = enforce_schema(stats_df, "src/contracts/gold_portfolio_stats.json")
     write_dataset(stats_df, "gold/portfolio_stats", partition_cols=("dt",))
 

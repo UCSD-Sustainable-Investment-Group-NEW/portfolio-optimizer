@@ -123,6 +123,57 @@ Environment variables (set in `.env`):
 - `RISK_AVERSION`: Risk aversion parameter (default: `5.0`)
 - `WEIGHT_CAP`: Maximum weight per asset (default: `0.07`)
 
+## Populating the Data Lake
+
+### Option 1: Generate Sample Data
+
+Generate synthetic data for testing:
+
+```bash
+# Generate data for 50 assets over 1 year (252 trading days)
+python scripts/populate_datalake.py --assets 50 --days 252
+
+# Generate and automatically ingest to bronze layer
+python scripts/populate_datalake.py --assets 50 --days 252 --ingest
+```
+
+### Option 2: Fetch Real Market Data
+
+Fetch real stock prices from Yahoo Finance:
+
+```bash
+# Install yfinance (optional, for real data)
+pip install yfinance
+
+# Fetch data for specific tickers
+python scripts/fetch_market_data.py --tickers AAPL MSFT GOOGL AMZN TSLA --days 252
+
+# Fetch and ingest
+python scripts/fetch_market_data.py --tickers AAPL MSFT GOOGL --days 252 --ingest
+```
+
+### Option 3: Use Your Own Data
+
+Place CSV files in `data/raw/` with the following formats:
+
+**prices_demo.csv:**
+```csv
+date,ticker,asset_id,adj_open,adj_close,volume
+2025-01-01,AAPL,AAPL,150.0,151.0,10000000
+```
+
+**esg_demo.csv:**
+```csv
+date,asset_id,provider,esg_raw
+2025-01-01,AAPL,demo,75.5
+```
+
+Then run ingestion:
+```bash
+export $(cat .env | grep -v '^#' | xargs)
+python -m src.ingest.to_bronze
+```
+
 ## Testing
 
 Run the test suite:
@@ -153,6 +204,16 @@ See per-directory READMEs for module-specific documentation:
 - `src/optimize/README.md` - Optimization algorithms
 - `src/backtest/README.md` - Backtesting engine
 - `src/orchestration/README.md` - Workflow orchestration
+
+## Cloud Deployment
+
+For production deployment to AWS, GCP, or Azure, see [CLOUD_DEPLOYMENT.md](CLOUD_DEPLOYMENT.md) for:
+- Infrastructure recommendations (ECS, Cloud Run, etc.)
+- Cost estimates
+- Containerization (Dockerfile included)
+- Prefect Cloud setup
+- Security best practices
+- Scaling strategies
 
 ## Next Steps
 

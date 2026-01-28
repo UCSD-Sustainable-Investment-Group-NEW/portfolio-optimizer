@@ -1,5 +1,6 @@
 import json
 import os
+import urllib.parse
 
 import importlib
 from functools import lru_cache
@@ -58,11 +59,41 @@ def write_dataset(df: pd.DataFrame, root: str, partition_cols=("dt",)) -> None:
 def read_parquet(key_or_glob: str) -> pd.DataFrame:
     _, pq = _arrow()
     fs = _fs()
+    
+    # Read individual files and extract partition columns from paths
     paths = fs.glob(f"{BUCKET}/{key_or_glob}")
     tables = []
     for path in paths:
         with fs.open(path, "rb") as handle:
-            tables.append(pq.read_table(handle).to_pandas())
+            df = pq.read_table(handle).to_pandas()
+            
+            # Extract partition columns from path (e.g., dt=2025-01-01)
+            # Path format: bucket/root/dt=2025-01-01/file.parquet
+            path_parts = path.replace(f"{BUCKET}/", "").split("/")
+            for part in path_parts:
+                if "=" in part:
+                    # Extract partition column name and value
+                    col_name, col_value = part.split("=", 1)
+                    # Only add if column doesn't already exist
+                    if col_name not in df.columns:
+                        # Decode URL encoding and extract just the date part if it contains timestamp
+                        col_value = urllib.parse.unquote(col_value)
+                        # If it's a datetime string, extract just the date part
+                        if " " in col_value or "T" in col_value:
+                            col_value = col_value.split()[0].split("T")[0]
+                        df[col_name] = col_value
+                    else:
+                        # If column exists, ensure values match (use partition value if different)
+                        existing_value = df[col_name].iloc[0] if len(df) > 0 else None
+                        col_value = urllib.parse.unquote(part.split("=", 1)[1])
+                        if " " in col_value or "T" in col_value:
+                            col_value = col_value.split()[0].split("T")[0]
+                        # Update if different (shouldn't happen, but just in case)
+                        if existing_value != col_value:
+                            df[col_name] = col_value
+            
+            tables.append(df)
+    
     return pd.concat(tables, ignore_index=True) if tables else pd.DataFrame()
 
 

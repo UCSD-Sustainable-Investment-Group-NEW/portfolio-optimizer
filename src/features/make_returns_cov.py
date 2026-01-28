@@ -39,6 +39,8 @@ def compute_covariances(returns: pd.DataFrame, window: int) -> pd.DataFrame:
     if returns.empty:
         return pd.DataFrame(columns=["dt", "asset_i", "asset_j", "cov"])
     returns = returns.copy()
+    # Drop duplicates before pivoting (keep last if duplicates exist)
+    returns = returns.drop_duplicates(subset=["dt", "asset_id"], keep="last")
     returns["dt"] = pd.to_datetime(returns["dt"])
     pivot = returns.pivot(index="dt", columns="asset_id", values="return_1d").sort_index()
     cov_frames = []
@@ -48,7 +50,12 @@ def compute_covariances(returns: pd.DataFrame, window: int) -> pd.DataFrame:
             continue
         current_dt = pivot.index[idx]
         cov_matrix = window_slice.cov(min_periods=window // 2)
-        melted = cov_matrix.stack().reset_index()
+        # Reset index/column names to avoid conflicts when stacking
+        cov_matrix.index.name = None
+        cov_matrix.columns.name = None
+        # Stack and reset_index with explicit names to avoid conflicts
+        stacked = cov_matrix.stack()
+        melted = stacked.reset_index(name="cov")
         melted.columns = ["asset_i", "asset_j", "cov"]
         melted["dt"] = current_dt.strftime("%Y-%m-%d")
         cov_frames.append(melted)

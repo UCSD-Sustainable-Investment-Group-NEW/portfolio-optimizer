@@ -54,10 +54,10 @@ def test_normalize_esg_run(monkeypatch):
     writes = {}
 
     monkeypatch.setattr(
-        "src.features.normalize_esg.read_parquet", lambda _: sample.copy()
+        "src.common.io.read_parquet", lambda _: sample.copy()
     )
     monkeypatch.setattr(
-        "src.features.normalize_esg.write_dataset",
+        "src.common.io.write_dataset",
         lambda df, root, partition_cols=("dt",): writes.setdefault(root, df.copy()),
     )
 
@@ -75,16 +75,17 @@ def test_frontier_run(monkeypatch):
     covariances = make_returns_cov.compute_covariances(returns, window=3)
     writes = {}
 
+    def fake_read(path):
+        if "features/returns" in path:
+            return returns.copy()
+        return covariances.copy()
+    
     monkeypatch.setattr(
-        frontier,
-        "read_parquet",
-        lambda path: returns.copy()
-        if "features/returns" in path
-        else covariances.copy(),
+        "src.common.io.read_parquet",
+        fake_read,
     )
     monkeypatch.setattr(
-        frontier,
-        "write_dataset",
+        "src.common.io.write_dataset",
         lambda df, root, partition_cols=("dt",): writes.setdefault(root, df.copy()),
     )
     monkeypatch.setattr(frontier, "WEIGHT_CAP", 1.0)
@@ -116,10 +117,9 @@ def test_backtest_run(monkeypatch):
             return returns.copy()
         return weights.copy()
 
-    monkeypatch.setattr(engine, "read_parquet", fake_read)
+    monkeypatch.setattr("src.common.io.read_parquet", fake_read)
     monkeypatch.setattr(
-        engine,
-        "write_dataset",
+        "src.common.io.write_dataset",
         lambda df, root, partition_cols=("dt",): writes.setdefault(root, df.copy()),
     )
 

@@ -11,3 +11,4 @@ cvxpy
 scikit-learn
 matplotlib
 pytest
+yfinance
