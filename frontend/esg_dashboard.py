@@ -1,11 +1,12 @@
 import datetime as dt
-from typing import List
+from typing import List, Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import streamlit as st
 import altair as alt
+import requests
 
 from esg_optimizer import (
     asset_sharpes,
@@ -124,6 +125,37 @@ def load_risk_free(start: dt.date, end: dt.date) -> pd.Series:
     return fetch_risk_free_rate(start, end)
 
 
+def call_api_optimize(
+    api_base_url: str,
+    tickers: List[str],
+    start_date: dt.date,
+    end_date: dt.date,
+    min_alloc: float,
+    esg_step: float,
+    target_esg: float,
+    esg_scores: Optional[List[dict]] = None,
+) -> Optional[dict]:
+    """Call the backend POST /api/optimize and return the JSON response or None on failure."""
+    url = f"{api_base_url.rstrip('/')}/api/optimize"
+    payload = {
+        "tickers": tickers,
+        "start_date": start_date.isoformat(),
+        "end_date": end_date.isoformat(),
+        "min_allocation": min_alloc,
+        "esg_step": esg_step,
+        "target_esg": target_esg,
+    }
+    if esg_scores:
+        payload["esg_scores"] = [{"ticker": s["ticker"], "esg_score": s["esg_score"]} for s in esg_scores]
+    try:
+        r = requests.post(url, json=payload, timeout=60)
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        st.error(f"API call failed: {e}")
+        return None
+
+
 @st.cache_data(show_spinner=False)
 def load_benchmark(tickers: List[str], start: dt.date, end: dt.date) -> pd.Series:
     """Download benchmark close prices, trying multiple symbols and fallbacks."""
@@ -166,6 +198,13 @@ def main() -> None:
     st.caption("Pick your tickers (any on Yahoo Finance), set ESG and allocation constraints, and visualize the optimized portfolio.")
 
     with st.sidebar:
+        st.subheader("Backend")
+        api_base_url = st.text_input(
+            "API base URL (optional)",
+            value="",
+            placeholder="http://localhost:8000",
+            help="If set, the dashboard will call this backend instead of running the optimizer locally.",
+        )
         st.subheader("Universe")
         custom_tickers = st.text_input(
             "Tickers (comma or space separated)",
@@ -222,61 +261,112 @@ def main() -> None:
         st.info("Adjust inputs, then press Run optimizer to calculate weights and frontier.")
         return
 
-    try:
-        prices = load_prices(tickers, start_date, end_date)
-        risk_free = load_risk_free(start_date, end_date)
-    except Exception as exc:
-        st.error(f"Data fetch failed: {exc}")
-        return
-
     clean_esg = edited_esg.dropna()
-    clean_esg = clean_esg[clean_esg["ticker"].isin(prices.columns)]
     clean_esg = clean_esg.drop_duplicates(subset=["ticker"])
-    if clean_esg.empty or len(clean_esg) != len(prices.columns):
-        st.error("Provide an ESG score for each selected ticker.")
-        return
 
-    esg_scores = clean_esg.set_index("ticker").loc[prices.columns, "esg_score"].values
-    mean_excess, cov_matrix = calc_stats(prices, risk_free)
+    use_api = api_base_url and api_base_url.strip()
 
-    esg_min, esg_max = esg_scores.min(), esg_scores.max()
-    esg_span = esg_max - esg_min
-    if esg_span < 1e-8:
-        target_esg = float(esg_min)
+    if use_api:
+        # Call backend API
+        esg_for_api = clean_esg[clean_esg["ticker"].isin(tickers)].to_dict("records")
+        if len(esg_for_api) != len(tickers):
+            st.error("Provide an ESG score for each selected ticker.")
+            return
+        resp = call_api_optimize(
+            api_base_url.strip(),
+            tickers,
+            start_date,
+            end_date,
+            min_alloc,
+            esg_step,
+            target_esg_input,
+            esg_scores=esg_for_api,
+        )
+        if resp is None:
+            return
+        # Map API response to dashboard variables
+        opt = type("Opt", (), {"weights": pd.Series(resp["weights"]), "sharpe": resp["sharpe"]})()
+        tangency = type("Tangency", (), {"sharpe": resp.get("tangency_sharpe") or 0.0})()
+        target_esg = resp["constraints"].get("esg_target", target_esg_input)
+        frontier_df = pd.DataFrame(resp["frontier"])
+        indiv_sharpes = pd.Series({h["ticker"]: h["sharpe"] for h in resp["holdings"]})
+        # Rolling Sharpe from API
+        rolling_list = resp.get("rolling_sharpes") or []
+        if rolling_list:
+            portfolio_sharpe_series = pd.Series(
+                {pd.Timestamp(d["date"]): d["sharpe"] for d in rolling_list}
+            ).sort_index()
+        else:
+            portfolio_sharpe_series = pd.Series(dtype=float)
+        window_days = len(portfolio_sharpe_series) if portfolio_sharpe_series.size else 1260
+        # Fake prices with just columns for chart labels (assets order)
+        prices = pd.DataFrame(columns=resp["assets"])
+        esg_scores = np.array([next(h["esg_score"] for h in resp["holdings"] if h["ticker"] == t) for t in resp["assets"]])
+        # Benchmark: load locally for date range from rolling_sharpes
+        if portfolio_sharpe_series.index.size > 0:
+            dr_min = portfolio_sharpe_series.index.min().date()
+            dr_max = portfolio_sharpe_series.index.max().date()
+        else:
+            dr_min, dr_max = start_date, end_date
+        bench_close = load_benchmark(["SPY", "^GSPC"], dr_min, dr_max)
+        returns_full = pd.DataFrame()
     else:
-        target_esg = float(np.clip(target_esg_input, esg_min + 1e-3, esg_max - 1e-3))
+        # Local optimizer
+        try:
+            prices = load_prices(tickers, start_date, end_date)
+            risk_free = load_risk_free(start_date, end_date)
+        except Exception as exc:
+            st.error(f"Data fetch failed: {exc}")
+            return
 
-    try:
-        opt = optimize_esg_frontier(mean_excess, cov_matrix, esg_scores, target_esg, min_allocation=min_alloc)
-        tangency = max_sharpe_portfolio(mean_excess, cov_matrix, min_allocation=min_alloc)
-    except Exception as exc:
-        st.error(f"Optimization failed: {exc}")
-        return
+        clean_esg = clean_esg[clean_esg["ticker"].isin(prices.columns)]
+        if clean_esg.empty or len(clean_esg) != len(prices.columns):
+            st.error("Provide an ESG score for each selected ticker.")
+            return
 
-    returns_full = prices.pct_change().dropna()
-    aligned_rf = risk_free.reindex(returns_full.index).ffill()
-    frontier = list(frontier_points(mean_excess, cov_matrix, esg_scores, min_alloc, step=esg_step))
-    frontier_df = pd.DataFrame([{"target_esg": p.target_esg, "sharpe": p.sharpe} for p in frontier])
-    indiv_sharpes = asset_sharpes(mean_excess, cov_matrix, prices.columns)
-    aligned_weights = opt.weights.reindex(returns_full.columns).fillna(0.0)
-    portfolio_daily = (returns_full * aligned_weights).sum(axis=1)
-    portfolio_excess = portfolio_daily.sub(aligned_rf, fill_value=0)
+        esg_scores = clean_esg.set_index("ticker").loc[prices.columns, "esg_score"].values
+        mean_excess, cov_matrix = calc_stats(prices, risk_free)
 
-    def rolling_sharpe(excess: pd.Series, window: int) -> pd.Series:
-        def _fn(x: pd.Series) -> float:
-            sigma = x.std()
-            if sigma == 0 or np.isnan(sigma):
-                return np.nan
-            return x.mean() / sigma * np.sqrt(252)
-        return excess.rolling(window=window, min_periods=max(60, window // 4)).apply(_fn, raw=False)
+        esg_min, esg_max = esg_scores.min(), esg_scores.max()
+        esg_span = esg_max - esg_min
+        if esg_span < 1e-8:
+            target_esg = float(esg_min)
+        else:
+            target_esg = float(np.clip(target_esg_input, esg_min + 1e-3, esg_max - 1e-3))
 
-    window_days = min(len(portfolio_excess), 252 * 5)
-    portfolio_sharpe_series = rolling_sharpe(portfolio_excess, window_days)
+        try:
+            opt = optimize_esg_frontier(mean_excess, cov_matrix, esg_scores, target_esg, min_allocation=min_alloc)
+            tangency = max_sharpe_portfolio(mean_excess, cov_matrix, min_allocation=min_alloc)
+        except Exception as exc:
+            st.error(f"Optimization failed: {exc}")
+            return
+
+        returns_full = prices.pct_change().dropna()
+        aligned_rf = risk_free.reindex(returns_full.index).ffill()
+        frontier = list(frontier_points(mean_excess, cov_matrix, esg_scores, min_alloc, step=esg_step))
+        frontier_df = pd.DataFrame([{"target_esg": p.target_esg, "sharpe": p.sharpe} for p in frontier])
+        indiv_sharpes = asset_sharpes(mean_excess, cov_matrix, prices.columns)
+        aligned_weights = opt.weights.reindex(returns_full.columns).fillna(0.0)
+        portfolio_daily = (returns_full * aligned_weights).sum(axis=1)
+        portfolio_excess = portfolio_daily.sub(aligned_rf, fill_value=0)
+
+        def rolling_sharpe(excess: pd.Series, window: int) -> pd.Series:
+            def _fn(x: pd.Series) -> float:
+                sigma = x.std()
+                if sigma == 0 or np.isnan(sigma):
+                    return np.nan
+                return x.mean() / sigma * np.sqrt(252)
+            return excess.rolling(window=window, min_periods=max(60, window // 4)).apply(_fn, raw=False)
+
+        window_days = min(len(portfolio_excess), 252 * 5)
+        portfolio_sharpe_series = rolling_sharpe(portfolio_excess, window_days)
+        bench_close = load_benchmark(["SPY", "^GSPC"], start=returns_full.index.min(), end=returns_full.index.max())
 
     bench_sharpe_series = None
     bench_error = None
-    bench_close = load_benchmark(["SPY", "^GSPC"], start=returns_full.index.min(), end=returns_full.index.max())
-    if bench_close.empty:
+    if use_api:
+        bench_error = "Benchmark comparison not available when using API."
+    elif bench_close.empty:
         bench_error = ""
     else:
         bench_returns = bench_close.pct_change().dropna()
@@ -361,8 +451,10 @@ def main() -> None:
                 linewidth=2.2,
                 label="ESG frontier",
             )
-        ax.scatter(esg_scores, indiv_sharpes.values, color="#d48a27", s=90, zorder=5, label="Assets")
-        for esg, shp, ticker in zip(esg_scores, indiv_sharpes.values, prices.columns):
+        asset_order = list(prices.columns)
+        indiv_vals = indiv_sharpes.reindex(asset_order).values if hasattr(indiv_sharpes, "reindex") else indiv_sharpes.values
+        ax.scatter(esg_scores, indiv_vals, color="#d48a27", s=90, zorder=5, label="Assets")
+        for esg, shp, ticker in zip(esg_scores, indiv_vals, asset_order):
             ax.text(esg, shp + 0.05, ticker, ha="center", fontsize=9, color="#1f3d2b")
         ax.scatter([target_esg], [opt.sharpe], color="#0f3b2b", s=140, marker="*", label="Optimized")
         ax.set_xlabel("ESG score")
@@ -417,8 +509,9 @@ def main() -> None:
         sharpe_ax.legend(loc="upper left")
         st.pyplot(sharpe_fig, clear_figure=True)
     with sharpe_note:
+        wdays = len(portfolio_sharpe_series) if portfolio_sharpe_series.size else 1260
         caption_text = (
-            f"Shows rolling Sharpe over a {window_days} trading-day window (≈5 years when data allows), "
+            f"Shows rolling Sharpe over a {wdays} trading-day window (≈5 years when data allows), "
             "using daily excess returns vs risk-free. SPY is the benchmark; if unavailable, only the portfolio is shown."
         )
         if bench_error:

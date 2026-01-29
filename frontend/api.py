@@ -83,6 +83,7 @@ class OptimizationResult(BaseModel):
     frontier: List[FrontierPoint]
     rolling_sharpes: List[SharpeDate]
     sharpe: float
+    tangency_sharpe: Optional[float] = None  # Unconstrained max-Sharpe portfolio
     weights: Dict[str, float]
     assets: List[str]
 
@@ -312,6 +313,7 @@ async def optimize_portfolio(request: OptimizationRequest):
             frontier=frontier_list,
             rolling_sharpes=rolling_sharpes_list,
             sharpe=float(opt.sharpe),
+            tangency_sharpe=float(tangency.sharpe),
             weights={ticker: float(weight) for ticker, weight in opt.weights.items()},
             assets=list(prices.columns)
         )

@@ -12,3 +12,7 @@ scikit-learn
 matplotlib
 pytest
 yfinance
+requests
+fastapi
+uvicorn[standard]
+streamlit
