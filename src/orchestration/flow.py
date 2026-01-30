@@ -8,6 +8,7 @@ from src.features.normalize_esg import run as normalize_esg_run
 from src.ingest.bronze_to_silver import esg_to_silver, prices_to_silver
 from src.ingest.to_bronze import run as ingest_bronze_run
 from src.optimize.frontier import run as optimize_run
+from src.optimize.results import run as results_run
 
 
 @task(name="Ingest Raw To Bronze")
@@ -37,6 +38,11 @@ def backtest_portfolio() -> None:
     backtest_run()
 
 
+@task(name="Generate Optimization Result")
+def generate_results() -> None:
+    results_run()
+
+
 @flow(name="Portfolio Optimizer Pipeline")
 def portfolio_pipeline() -> None:
     ingest_bronze()
@@ -44,6 +50,7 @@ def portfolio_pipeline() -> None:
     build_features()
     optimize_portfolio()
     backtest_portfolio()
+    generate_results()
 
 
 if __name__ == "__main__":

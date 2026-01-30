@@ -1,6 +1,9 @@
 import json
 import os
 import urllib.parse
+from dotenv import load_dotenv
+
+load_dotenv()
 
 import importlib
 from functools import lru_cache

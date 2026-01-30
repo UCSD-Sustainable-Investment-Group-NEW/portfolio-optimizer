@@ -52,7 +52,7 @@ def fetch_risk_free_rate(start: dt.date, end: dt.date) -> pd.Series:
 def calc_stats(price_data: pd.DataFrame, risk_free_rate: pd.Series) -> Tuple[pd.Series, pd.DataFrame]:
     """Mean daily excess returns and covariance matrix of excess returns."""
     returns = price_data.pct_change().dropna()
-    aligned_rf = risk_free_rate.reindex(returns.index).fillna(method="ffill")
+    aligned_rf = risk_free_rate.reindex(returns.index).ffill()
     excess = returns.sub(aligned_rf, axis=0)
     return excess.mean(), excess.cov()
 
