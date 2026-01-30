@@ -125,6 +125,18 @@ def load_risk_free(start: dt.date, end: dt.date) -> pd.Series:
     return fetch_risk_free_rate(start, end)
 
 
+def call_api_gold_latest(api_base_url: str) -> Optional[dict]:
+    """Call GET /api/gold/latest and return the JSON response or None on failure."""
+    url = f"{api_base_url.rstrip('/')}/api/gold/latest"
+    try:
+        r = requests.get(url, timeout=30)
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        st.error(f"Data lake API call failed: {e}")
+        return None
+
+
 def call_api_optimize(
     api_base_url: str,
     tickers: List[str],
@@ -205,6 +217,13 @@ def main() -> None:
             placeholder="http://localhost:8000",
             help="If set, the dashboard will call this backend instead of running the optimizer locally.",
         )
+        data_source = st.radio(
+            "Data source",
+            options=["Data Lake (gold)", "Live optimize (yfinance)"],
+            index=0,
+            help="Data Lake: read portfolios/stats/performance from the pipeline gold layer. Live: recalculate from yfinance.",
+        )
+        use_data_lake = data_source.startswith("Data Lake")
         st.subheader("Universe")
         custom_tickers = st.text_input(
             "Tickers (comma or space separated)",
@@ -266,8 +285,45 @@ def main() -> None:
 
     use_api = api_base_url and api_base_url.strip()
 
-    if use_api:
-        # Call backend API
+    if use_api and use_data_lake:
+        # Read from data lake (gold layer) via API
+        resp = call_api_gold_latest(api_base_url.strip())
+        if resp is None:
+            return
+        if not resp.get("portfolios") and not resp.get("performance"):
+            st.warning("Data lake returned no gold data. Run the pipeline first (ingest → silver → features → optimize → backtest).")
+            return
+        # Map gold response to dashboard variables (minimal set for lake view)
+        as_of = resp.get("as_of_dt", "unknown")
+        portfolios_list = resp.get("portfolios") or []
+        stats_list = resp.get("portfolio_stats") or []
+        perf_list = resp.get("performance") or []
+        opt_weights = pd.Series({p["asset_id"]: p["weight"] for p in portfolios_list})
+        if opt_weights.empty:
+            st.warning("No portfolio weights in gold layer.")
+            return
+        opt = type("Opt", (), {"weights": opt_weights, "sharpe": 0.0})()  # sharpe not in gold
+        tangency = type("Tangency", (), {"sharpe": 0.0})()
+        target_esg = 0.0
+        frontier_df = pd.DataFrame()
+        indiv_sharpes = pd.Series(dtype=float)
+        portfolio_sharpe_series = pd.Series(dtype=float)
+        window_days = 1260
+        prices = pd.DataFrame(columns=opt_weights.index.tolist())
+        esg_scores = np.zeros(len(opt_weights))
+        bench_close = pd.Series(dtype=float)
+        returns_full = pd.DataFrame()
+        # Store for lake-only display
+        gold_stats = stats_list[0] if stats_list else {}
+        gold_perf_df = pd.DataFrame(perf_list) if perf_list else pd.DataFrame()
+        use_api = True  # keep use_api so bench_error branch is correct
+        st.session_state["_gold_lake_view"] = True
+        st.session_state["_gold_as_of"] = as_of
+        st.session_state["_gold_stats"] = gold_stats
+        st.session_state["_gold_perf_df"] = gold_perf_df
+    elif use_api:
+        # Call backend API (live optimize)
+        st.session_state["_gold_lake_view"] = False
         esg_for_api = clean_esg[clean_esg["ticker"].isin(tickers)].to_dict("records")
         if len(esg_for_api) != len(tickers):
             st.error("Provide an ESG score for each selected ticker.")
@@ -310,8 +366,10 @@ def main() -> None:
             dr_min, dr_max = start_date, end_date
         bench_close = load_benchmark(["SPY", "^GSPC"], dr_min, dr_max)
         returns_full = pd.DataFrame()
+        st.session_state["_gold_lake_view"] = False
     else:
         # Local optimizer
+        st.session_state["_gold_lake_view"] = False
         try:
             prices = load_prices(tickers, start_date, end_date)
             risk_free = load_risk_free(start_date, end_date)
@@ -377,31 +435,42 @@ def main() -> None:
     col_metrics, col_weights = st.columns([1, 2], gap="large", vertical_alignment="top")
     with col_metrics:
         st.markdown("<div style='margin-top:6px;'><h3>Portfolio snapshot</h3></div>", unsafe_allow_html=True)
-        st.markdown(
-            f"""
-            <div class="metric-card">
-                <div class="label">Sharpe (ESG target {target_esg:.3f})</div>
-                <div class="value">{opt.sharpe:.2f}</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        st.markdown(
-            f"""
-            <div class="metric-card" style="margin-top:0.7rem;">
-                <div class="label">Tangency Sharpe</div>
-                <div class="value">{tangency.sharpe:.2f}</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        st.markdown(
-            "<div class='section-note' style='margin-top:0.6rem;'>"
-            "Sharpe ratios are annualized. The ESG-constrained portfolio maximizes Sharpe while meeting your ESG target; "
-            "Tangency Sharpe is the unconstrained benchmark."
-            "</div>",
-            unsafe_allow_html=True,
-        )
+        if st.session_state.get("_gold_lake_view"):
+            as_of = st.session_state.get("_gold_as_of", "unknown")
+            gold_stats = st.session_state.get("_gold_stats") or {}
+            st.markdown(
+                f"<div class='section-note'>Data from <b>data lake</b> (gold layer, as of {as_of}).</div>",
+                unsafe_allow_html=True,
+            )
+            if gold_stats:
+                st.metric("Expected return (annual)", f"{gold_stats.get('expected_return', 0):.2%}")
+                st.metric("Volatility (annual)", f"{gold_stats.get('volatility', 0):.2%}")
+        else:
+            st.markdown(
+                f"""
+                <div class="metric-card">
+                    <div class="label">Sharpe (ESG target {target_esg:.3f})</div>
+                    <div class="value">{opt.sharpe:.2f}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                f"""
+                <div class="metric-card" style="margin-top:0.7rem;">
+                    <div class="label">Tangency Sharpe</div>
+                    <div class="value">{tangency.sharpe:.2f}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                "<div class='section-note' style='margin-top:0.6rem;'>"
+                "Sharpe ratios are annualized. The ESG-constrained portfolio maximizes Sharpe while meeting your ESG target; "
+                "Tangency Sharpe is the unconstrained benchmark."
+                "</div>",
+                unsafe_allow_html=True,
+            )
     with col_weights:
         st.markdown("<div style='margin-top:6px;'><h3>Optimized weights</h3></div>", unsafe_allow_html=True)
         weights_df = format_weights(opt.weights)
@@ -436,6 +505,19 @@ def main() -> None:
         st.markdown("</div>", unsafe_allow_html=True)
 
     st.divider()
+    # When data is from lake, show cumulative performance if available
+    if st.session_state.get("_gold_lake_view"):
+        gold_perf_df = st.session_state.get("_gold_perf_df")
+        if gold_perf_df is not None and not gold_perf_df.empty and "dt" in gold_perf_df.columns and "cumulative_return" in gold_perf_df.columns:
+            st.markdown("### Backtest performance (from data lake)", unsafe_allow_html=True)
+            perf_chart = alt.Chart(gold_perf_df.assign(dt=pd.to_datetime(gold_perf_df["dt"]))).mark_line(color="#1f6847").encode(
+                x=alt.X("dt:T", title="Date"),
+                y=alt.Y("cumulative_return:Q", title="Cumulative return", axis=alt.Axis(format="%")),
+            ).properties(height=300)
+            st.altair_chart(perf_chart, use_container_width=True)
+            st.caption("Cumulative return from backtest (gold/performance).")
+        st.divider()
+
     frontier_col, table_col = st.columns([3, 2], gap="large")
     with frontier_col:
         st.markdown("### Performance & ESG trade-offs", unsafe_allow_html=True)
@@ -453,10 +535,12 @@ def main() -> None:
             )
         asset_order = list(prices.columns)
         indiv_vals = indiv_sharpes.reindex(asset_order).values if hasattr(indiv_sharpes, "reindex") else indiv_sharpes.values
-        ax.scatter(esg_scores, indiv_vals, color="#d48a27", s=90, zorder=5, label="Assets")
-        for esg, shp, ticker in zip(esg_scores, indiv_vals, asset_order):
-            ax.text(esg, shp + 0.05, ticker, ha="center", fontsize=9, color="#1f3d2b")
-        ax.scatter([target_esg], [opt.sharpe], color="#0f3b2b", s=140, marker="*", label="Optimized")
+        if len(indiv_vals) and len(asset_order):
+            ax.scatter(esg_scores, indiv_vals, color="#d48a27", s=90, zorder=5, label="Assets")
+            for esg, shp, ticker in zip(esg_scores, indiv_vals, asset_order):
+                ax.text(esg, shp + 0.05, ticker, ha="center", fontsize=9, color="#1f3d2b")
+        if not (isinstance(opt.sharpe, (int, float)) and opt.sharpe == 0 and st.session_state.get("_gold_lake_view")):
+            ax.scatter([target_esg], [opt.sharpe], color="#0f3b2b", s=140, marker="*", label="Optimized")
         ax.set_xlabel("ESG score")
         ax.set_ylabel("Annualized Sharpe")
         ax.grid(True, alpha=0.25, linestyle="--", linewidth=0.8)

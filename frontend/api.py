@@ -1,14 +1,28 @@
 from __future__ import annotations
 
 import datetime as dt
-from typing import List, Optional, Dict
+import sys
+from pathlib import Path
+from typing import List, Optional, Dict, Any
 
 import numpy as np
 import pandas as pd
 import yfinance as yf
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+
+# Ensure project root is on path so we can import src.common.io when running from frontend/
+_root = Path(__file__).resolve().parent.parent
+if str(_root) not in sys.path:
+    sys.path.insert(0, str(_root))
+
+try:
+    from src.common.io import read_parquet
+    LAKE_AVAILABLE = True
+except Exception:
+    read_parquet = None
+    LAKE_AVAILABLE = False
 
 from esg_optimizer import (
     asset_sharpes,
@@ -86,6 +100,170 @@ class OptimizationResult(BaseModel):
     tangency_sharpe: Optional[float] = None  # Unconstrained max-Sharpe portfolio
     weights: Dict[str, float]
     assets: List[str]
+
+
+# --- Data lake (gold) response models ---
+class GoldPortfolioRow(BaseModel):
+    dt: str
+    asset_id: str
+    weight: float
+
+
+class GoldPortfolioStatsRow(BaseModel):
+    dt: str
+    expected_return: float
+    volatility: float
+
+
+class GoldPerformanceRow(BaseModel):
+    dt: str
+    portfolio_return: float
+    cumulative_return: float
+
+
+class GoldLatestResponse(BaseModel):
+    """Combined response for latest gold data from the data lake."""
+    as_of_dt: str
+    portfolios: List[GoldPortfolioRow]
+    portfolio_stats: List[GoldPortfolioStatsRow]
+    performance: List[GoldPerformanceRow]
+    source: str = "data_lake"
+
+
+def _read_gold_df(glob_pattern: str) -> pd.DataFrame:
+    """Read parquet from data lake; returns empty DataFrame if lake unavailable or no data."""
+    if not LAKE_AVAILABLE or read_parquet is None:
+        return pd.DataFrame()
+    try:
+        return read_parquet(glob_pattern)
+    except Exception:
+        return pd.DataFrame()
+
+
+def _latest_dt_from_df(df: pd.DataFrame, dt_col: str = "dt") -> Optional[str]:
+    if df.empty or dt_col not in df.columns:
+        return None
+    return str(df[dt_col].max())
+
+
+@app.get("/api/gold/portfolios", response_model=List[GoldPortfolioRow])
+async def get_gold_portfolios(
+    dt_filter: Optional[str] = Query(None, alias="dt", description="Partition date (YYYY-MM-DD) or 'latest'"),
+):
+    """Read portfolio weights from the data lake (gold layer)."""
+    df = _read_gold_df("gold/portfolios/dt=*/*.parquet")
+    if df.empty:
+        return []
+    if dt_filter and dt_filter.lower() == "latest":
+        latest = _latest_dt_from_df(df)
+        if latest:
+            df = df[df["dt"] == latest]
+    elif dt_filter:
+        df = df[df["dt"].astype(str).str.startswith(dt_filter[:10])]
+    df = df.drop_duplicates()
+    return [GoldPortfolioRow(dt=str(row["dt"]), asset_id=str(row["asset_id"]), weight=float(row["weight"])) for _, row in df.iterrows()]
+
+
+@app.get("/api/gold/portfolio-stats", response_model=List[GoldPortfolioStatsRow])
+async def get_gold_portfolio_stats(
+    dt_filter: Optional[str] = Query(None, alias="dt", description="Partition date (YYYY-MM-DD) or 'latest'"),
+):
+    """Read portfolio stats (expected return, volatility) from the data lake (gold layer)."""
+    df = _read_gold_df("gold/portfolio_stats/dt=*/*.parquet")
+    if df.empty:
+        return []
+    if dt_filter and dt_filter.lower() == "latest":
+        latest = _latest_dt_from_df(df)
+        if latest:
+            df = df[df["dt"] == latest]
+    elif dt_filter:
+        df = df[df["dt"].astype(str).str.startswith(dt_filter[:10])]
+    df = df.drop_duplicates()
+    return [
+        GoldPortfolioStatsRow(
+            dt=str(row["dt"]),
+            expected_return=float(row["expected_return"]),
+            volatility=float(row["volatility"]),
+        )
+        for _, row in df.iterrows()
+    ]
+
+
+@app.get("/api/gold/performance", response_model=List[GoldPerformanceRow])
+async def get_gold_performance(
+    dt_filter: Optional[str] = Query(None, alias="dt", description="Partition date or 'latest'"),
+    start: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
+    end: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
+):
+    """Read backtest performance from the data lake (gold layer)."""
+    df = _read_gold_df("gold/performance/dt=*/*.parquet")
+    if df.empty:
+        return []
+    if dt_filter and dt_filter.lower() == "latest":
+        latest = _latest_dt_from_df(df)
+        if latest:
+            df = df[df["dt"] == latest]
+    elif dt_filter:
+        df = df[df["dt"].astype(str).str.startswith(dt_filter[:10])]
+    if start:
+        df = df[df["dt"].astype(str) >= start[:10]]
+    if end:
+        df = df[df["dt"].astype(str) <= end[:10]]
+    df = df.drop_duplicates(subset=["dt"], keep="last").sort_values("dt")
+    return [
+        GoldPerformanceRow(
+            dt=str(row["dt"]),
+            portfolio_return=float(row["portfolio_return"]),
+            cumulative_return=float(row["cumulative_return"]),
+        )
+        for _, row in df.iterrows()
+    ]
+
+
+@app.get("/api/gold/latest", response_model=GoldLatestResponse)
+async def get_gold_latest():
+    """Return latest gold data from the data lake (portfolios, stats, performance) for the dashboard."""
+    portfolios_df = _read_gold_df("gold/portfolios/dt=*/*.parquet")
+    stats_df = _read_gold_df("gold/portfolio_stats/dt=*/*.parquet")
+    perf_df = _read_gold_df("gold/performance/dt=*/*.parquet")
+
+    as_of_dt = ""
+    if not portfolios_df.empty and "dt" in portfolios_df.columns:
+        as_of_dt = str(portfolios_df["dt"].max())
+    elif not stats_df.empty and "dt" in stats_df.columns:
+        as_of_dt = str(stats_df["dt"].max())
+    elif not perf_df.empty and "dt" in perf_df.columns:
+        as_of_dt = str(perf_df["dt"].max())
+
+    # Latest partition only for portfolios and stats
+    if not portfolios_df.empty and as_of_dt:
+        portfolios_df = portfolios_df[portfolios_df["dt"].astype(str) == as_of_dt]
+    if not stats_df.empty and as_of_dt:
+        stats_df = stats_df[stats_df["dt"].astype(str) == as_of_dt]
+    # Performance: full series (already sorted by dt in read)
+    if not perf_df.empty:
+        perf_df = perf_df.sort_values("dt").drop_duplicates(subset=["dt"], keep="last")
+
+    portfolios = [
+        GoldPortfolioRow(dt=str(r["dt"]), asset_id=str(r["asset_id"]), weight=float(r["weight"]))
+        for _, r in portfolios_df.iterrows()
+    ]
+    portfolio_stats = [
+        GoldPortfolioStatsRow(dt=str(r["dt"]), expected_return=float(r["expected_return"]), volatility=float(r["volatility"]))
+        for _, r in stats_df.iterrows()
+    ]
+    performance = [
+        GoldPerformanceRow(dt=str(r["dt"]), portfolio_return=float(r["portfolio_return"]), cumulative_return=float(r["cumulative_return"]))
+        for _, r in perf_df.iterrows()
+    ]
+
+    return GoldLatestResponse(
+        as_of_dt=as_of_dt or "",
+        portfolios=portfolios,
+        portfolio_stats=portfolio_stats,
+        performance=performance,
+        source="data_lake",
+    )
 
 
 def fetch_benchmark(tickers: List[str], start: pd.Timestamp, end: pd.Timestamp) -> pd.Series:
@@ -329,7 +507,27 @@ async def optimize_portfolio(request: OptimizationRequest):
 @app.get("/api/health")
 async def health_check():
     """Simple health check endpoint."""
-    return {"status": "healthy", "timestamp": dt.datetime.now().isoformat()}
+    return {
+        "status": "healthy",
+        "timestamp": dt.datetime.now().isoformat(),
+        "data_lake_available": LAKE_AVAILABLE,
+    }
+
+
+@app.get("/api/gold/health")
+async def gold_health():
+    """Check if the data lake (gold layer) is reachable and has data."""
+    if not LAKE_AVAILABLE:
+        return {"available": False, "reason": "Lake IO not configured (missing src.common.io or env)"}
+    try:
+        df = _read_gold_df("gold/portfolios/dt=*/*.parquet")
+        return {
+            "available": True,
+            "has_portfolios": not df.empty,
+            "partition_count": int(df["dt"].nunique()) if not df.empty and "dt" in df.columns else 0,
+        }
+    except Exception as e:
+        return {"available": False, "reason": str(e)}
 
 
 if __name__ == "__main__":

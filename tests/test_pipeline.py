@@ -30,6 +30,29 @@ def _sample_prices() -> pd.DataFrame:
     return df
 
 
+def _sample_prices_for_frontier() -> pd.DataFrame:
+    """Prices so that returns have 3 dates (2023-12-28, 29, 2024-01-01); first-of-month Jan = 2024-01-01 matches cov dt."""
+    rows = []
+    dates = ["2023-12-27", "2023-12-28", "2023-12-29", "2024-01-01"]
+    for asset, prices in {
+        "A": [100.0, 101.0, 102.0, 103.0],
+        "B": [50.0, 50.5, 51.0, 51.5],
+        "C": [80.0, 80.5, 81.0, 81.5],
+    }.items():
+        for idx, (dt, price) in enumerate(zip(dates, prices)):
+            rows.append(
+                {
+                    "asset_id": asset,
+                    "ticker": asset,
+                    "adj_close": price,
+                    "adj_open": price,
+                    "volume": 1000 + idx,
+                    "dt": dt,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
 def test_compute_returns_and_covariances():
     prices = _sample_prices()
     returns = make_returns_cov.compute_returns(prices)
@@ -70,7 +93,7 @@ def test_normalize_esg_run(monkeypatch):
 
 
 def test_frontier_run(monkeypatch):
-    prices = _sample_prices()
+    prices = _sample_prices_for_frontier()
     returns = make_returns_cov.compute_returns(prices)
     covariances = make_returns_cov.compute_covariances(returns, window=3)
     writes = {}
