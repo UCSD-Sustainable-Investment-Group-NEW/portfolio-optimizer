@@ -4,13 +4,13 @@ import os
 from dataclasses import dataclass
 from typing import Sequence
 
-import cvxpy as cp
 import numpy as np
 import pandas as pd
 
 DEFAULT_LOOKBACK = int(os.getenv("EXPECTED_RETURN_LOOKBACK", "20"))
 RISK_AVERSION = float(os.getenv("RISK_AVERSION", "5.0"))
 WEIGHT_CAP = float(os.getenv("WEIGHT_CAP", "0.07"))
+ESG_PREFERENCE = float(os.getenv("ESG_PREFERENCE", "0.0"))
 
 
 @dataclass
@@ -33,7 +33,12 @@ def _expected_returns(returns: pd.DataFrame, dt: str, lookback: int) -> pd.Serie
     window = returns.loc[(returns["dt"] <= pd.to_datetime(dt)) & (returns["dt"] >= cutoff)]
     if window.empty:
         window = returns.loc[returns["dt"] <= pd.to_datetime(dt)]
-    expected = window.groupby("asset_id")["return_1d"].mean()
+    if window.empty:
+        return pd.Series(dtype="float64")
+    window = window.sort_values(["asset_id", "dt"])
+    expected = window.groupby("asset_id")["return_1d"].apply(
+        lambda series: series.ewm(span=lookback, adjust=False).mean().iloc[-1]
+    )
     return expected.fillna(0.0)
 
 
@@ -50,15 +55,30 @@ def _covariance_matrix(covariances: pd.DataFrame, dt: str, assets: Sequence[str]
     return sym
 
 
-def _solve_mean_variance(expected: pd.Series, cov_matrix: np.ndarray) -> np.ndarray:
+def _solve_mean_variance(
+    expected: pd.Series, cov_matrix: np.ndarray, esg: pd.Series | None, gamma: float
+) -> np.ndarray:
     assets = expected.index.tolist()
     n = len(assets)
     if n == 0:
         return np.array([])
+    try:
+        import cvxpy as cp
+    except Exception:
+        return np.ones(n) / n
+
     mu = expected.values
     Sigma = cov_matrix
     weights = cp.Variable(n)
-    objective = cp.Maximize(mu @ weights - RISK_AVERSION * cp.quad_form(weights, Sigma))
+    if esg is None or gamma == 0.0:
+        objective = cp.Maximize(mu @ weights - RISK_AVERSION * cp.quad_form(weights, Sigma))
+    else:
+        esg_vec = esg.values
+        objective = cp.Maximize(
+            mu @ weights
+            - RISK_AVERSION * cp.quad_form(weights, Sigma)
+            + gamma * (esg_vec @ weights)
+        )
     constraints = [
         cp.sum(weights) == 1.0,
         weights >= 0,
@@ -76,7 +96,7 @@ def _solve_mean_variance(expected: pd.Series, cov_matrix: np.ndarray) -> np.ndar
                 break
         except Exception:
             continue
-    
+
     if not solved or weights.value is None:
         # Fallback: use equal weights if optimization fails
         solution = np.ones(n) / n
@@ -89,12 +109,30 @@ def _solve_mean_variance(expected: pd.Series, cov_matrix: np.ndarray) -> np.ndar
     return solution
 
 
+def _pick_esg(esg: pd.DataFrame, dt: str, assets: Sequence[str]) -> pd.Series:
+    if esg.empty:
+        return pd.Series(0.0, index=assets, dtype="float64")
+    if "esg_normalized" not in esg.columns:
+        return pd.Series(0.0, index=assets, dtype="float64")
+    esg = esg.copy()
+    esg["dt"] = pd.to_datetime(esg["dt"])
+    cutoff = pd.to_datetime(dt)
+    eligible = esg.loc[esg["dt"] <= cutoff]
+    if eligible.empty:
+        return pd.Series(0.0, index=assets, dtype="float64")
+    latest_dt = eligible["dt"].max()
+    latest = eligible.loc[eligible["dt"] == latest_dt]
+    scores = latest.groupby("asset_id")["esg_normalized"].mean()
+    return scores.reindex(assets).fillna(0.0)
+
+
 def run(lookback: int = DEFAULT_LOOKBACK, rebalance_freq: str = "monthly") -> OptimizationArtifacts:
     from src.common.io import read_parquet, write_dataset
     from src.common.schemas import enforce_schema
 
     returns = read_parquet("features/returns/dt=*/*.parquet")
     covariances = read_parquet("features/covariances/dt=*/*.parquet")
+    esg = read_parquet("features/esg_normalized/dt=*/*.parquet")
     if returns.empty or covariances.empty:
         return OptimizationArtifacts(
             weights=pd.DataFrame(columns=["dt", "asset_id", "weight"]),
@@ -127,7 +165,13 @@ def run(lookback: int = DEFAULT_LOOKBACK, rebalance_freq: str = "monthly") -> Op
             if len(assets) == 0:
                 continue
             cov_matrix = _covariance_matrix(covariances, rebalance_dt_str, assets)
-            solution = _solve_mean_variance(expected.reindex(assets), cov_matrix)
+            esg_scores = _pick_esg(esg, rebalance_dt_str, assets)
+            solution = _solve_mean_variance(
+                expected.reindex(assets),
+                cov_matrix,
+                esg_scores,
+                ESG_PREFERENCE,
+            )
 
             weights_df = pd.DataFrame({"asset_id": assets, "weight": solution})
             weights_df["dt"] = rebalance_dt_str

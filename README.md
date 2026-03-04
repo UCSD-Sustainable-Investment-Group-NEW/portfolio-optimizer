@@ -7,8 +7,8 @@ Modern data & research workspace for iterating on ESG-aware portfolio constructi
 - **Data Lake Infrastructure**: S3/MinIO integration for local and cloud storage
 - **Data Pipeline**: Bronze → Silver → Features → Gold data layers
 - **Schema Enforcement**: JSON contract-driven validation (`src/common/schemas.py`)
-- **Feature Engineering**: Returns, covariances, and ESG normalization
-- **Portfolio Optimization**: Mean-variance optimization with constraints
+- **Feature Engineering**: Returns, Ledoit–Wolf shrinkage covariances, and ESG normalization
+- **Portfolio Optimization**: Mean-variance optimization with ESG preference term and exponentially weighted expected returns
 - **Backtesting**: Historical performance simulation
 - **Orchestration**: Prefect-based workflow automation
 
@@ -107,7 +107,8 @@ Raw CSVs → Bronze (Parquet) → Silver (Cleaned) → Features → Optimization
 
 - **Bronze**: Raw ingested data, partitioned by date
 - **Silver**: Cleaned data with basic transformations (z-scores, schema enforcement)
-- **Features**: Engineered features (returns, covariances, normalized ESG scores)
+- **Features**: Engineered features (returns, Ledoit–Wolf covariances, normalized ESG scores)
+- **Optimization**: Mean-variance objective with ESG reward term and exponentially weighted expected returns: `mu @ w - lambda * w^T Σ w + gamma * ESG @ w`
 - **Gold**: Final outputs (optimized portfolios, statistics, backtest results)
 
 ## Configuration
@@ -119,9 +120,10 @@ Environment variables (set in `.env`):
 - `AWS_ACCESS_KEY_ID`: MinIO access key (default: `admin`)
 - `AWS_SECRET_ACCESS_KEY`: MinIO secret key (default: `admin12345`)
 - `COV_WINDOW_DAYS`: Covariance calculation window (default: `20`)
-- `EXPECTED_RETURN_LOOKBACK`: Return lookback period (default: `20`)
+- `EXPECTED_RETURN_LOOKBACK`: Exponential weighting span for expected returns (default: `20`)
 - `RISK_AVERSION`: Risk aversion parameter (default: `5.0`)
 - `WEIGHT_CAP`: Maximum weight per asset (default: `0.07`)
+- `ESG_PREFERENCE`: ESG preference weight (gamma) in the optimizer objective (default: `0.0`)
 
 ## Populating the Data Lake
 
@@ -180,6 +182,9 @@ Run the test suite:
 ```bash
 pytest tests/
 ```
+
+Notes:
+- Tests use lightweight stubs for FastAPI and yfinance when those imports fail in the local environment (see `tests/conftest.py`). This keeps unit tests runnable offline or without optional dependencies.
 
 ## Troubleshooting
 

@@ -4,6 +4,7 @@ import os
 from dataclasses import dataclass
 
 import pandas as pd
+from sklearn.covariance import LedoitWolf
 
 DEFAULT_WINDOW = int(os.getenv("COV_WINDOW_DAYS", "20"))
 
@@ -48,15 +49,18 @@ def compute_covariances(returns: pd.DataFrame, window: int) -> pd.DataFrame:
         window_slice = pivot.iloc[idx - window + 1 : idx + 1]
         if window_slice.shape[0] < window:
             continue
+        window_slice = window_slice.fillna(0.0)
         current_dt = pivot.index[idx]
-        cov_matrix = window_slice.cov(min_periods=window // 2)
-        # Reset index/column names to avoid conflicts when stacking
-        cov_matrix.index.name = None
-        cov_matrix.columns.name = None
+        lw = LedoitWolf().fit(window_slice.values)
+        cov_matrix = pd.DataFrame(
+            lw.covariance_,
+            index=window_slice.columns,
+            columns=window_slice.columns,
+        )
         # Stack and reset_index with explicit names to avoid conflicts
         stacked = cov_matrix.stack()
+        stacked.index = stacked.index.set_names(["asset_i", "asset_j"])
         melted = stacked.reset_index(name="cov")
-        melted.columns = ["asset_i", "asset_j", "cov"]
         melted["dt"] = current_dt.strftime("%Y-%m-%d")
         cov_frames.append(melted)
     if not cov_frames:
