@@ -33,7 +33,12 @@ def _expected_returns(returns: pd.DataFrame, dt: str, lookback: int) -> pd.Serie
     window = returns.loc[(returns["dt"] <= pd.to_datetime(dt)) & (returns["dt"] >= cutoff)]
     if window.empty:
         window = returns.loc[returns["dt"] <= pd.to_datetime(dt)]
-    expected = window.groupby("asset_id")["return_1d"].mean()
+    if window.empty:
+        return pd.Series(dtype="float64")
+    window = window.sort_values(["asset_id", "dt"])
+    expected = window.groupby("asset_id")["return_1d"].apply(
+        lambda series: series.ewm(span=lookback, adjust=False).mean().iloc[-1]
+    )
     return expected.fillna(0.0)
 
 
